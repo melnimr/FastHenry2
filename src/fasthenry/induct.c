@@ -1,13 +1,18 @@
 /* This is the main part of the code */
 
 #include "induct.h"
-#include "sparse/spMatrix.h"
+// Enrico
 #include <string.h>
-#include <ctype.h>
+
+/* these are missing in some math.h files */
+extern double asinh();
+extern double atanh();
 
 #define MAXPRINT 1
 #define MAXCHARS 400
 #define TIMESIZE 10
+
+static int notblankline();
 
 FILE *fp, *fp2, *fp3, *fptemp, *fb, *fROM;
 int num_exact_mutual;
@@ -20,47 +25,17 @@ int forced = 0;  /* for debugging inside exact_mutual() */
 char outfname[200];
 char outfname2[200];
 
-/* SRW */
-charge *assignFil(SEGMENT*, int*, charge*);
-double **MatrixAlloc(int, int, int);
-void fillA(SYS*);
-void old_fillM(SYS*);
-void fillZ(SYS*);
-#if SUPERCON == ON
-void fillZ_diag(SYS*, double);
-void set_rvals(SYS*, double);
-#endif
-double resistance(FILAMENT*, double);
-/* int matherr(struct exception*); */
-int countlines(FILE*);
-static int local_notblankline(char*);
-void savemats(SYS*);
-void savecmplx(FILE*, char*, CX**, int, int);
-void savecmplx2(FILE*, char*, CX**, int, int);
-void formMZMt(SYS*);
-void oldformMZMt(SYS*);
-char* MattAlloc(int, int);
-void formMtrans(SYS*);
-void compare_meshes(MELEMENT*, MELEMENT*);
-void cx_dumpMat_totextfile(FILE*, CX**, int, int);
-void dumpMat_totextfile(FILE*, double**, int, int);
-void dumpVec_totextfile(FILE*, double*, int);
-void fillMrow(MELEMENT**, int, double*);
-void dump_to_Ycond(FILE*, int, SYS*);
-void saveCarray(FILE*, char*, double**, int, int);
-int nnz_inM(MELEMENT**, int);
-void dump_M_to_text(FILE*, MELEMENT**, int, int);
-void dump_M_to_matlab(FILE*, MELEMENT**, int, int, char*);
-void pick_ground_nodes(SYS*);
-int pick_subset(strlist*, SYS*);
-void concat4(char*, char*, char*, char*);
-
-#ifdef SRW0814
-SRWSECONDS
+/* savemat_mod machine type */
+#ifdef DEC
+int machine = 0000;
+#else
+int machine = 1000;
 #endif
 
-int
-main(int argc, char **argv)
+
+main(argc, argv)
+int argc;
+char *argv[];
 {
 
   double width, height, length, freq, freqlast;
@@ -92,6 +67,7 @@ main(int argc, char **argv)
   int actual_order;
 
   int num_planes, nonp, planemeshes, tree_meshes;           /* CMS 6/7/92 */
+  void fillgrids();                               /* function in addgroundplane.c */
 
   int *meshsect;
   double fmin, fmax, logofstep;
@@ -101,7 +77,7 @@ main(int argc, char **argv)
   extern long memcount;
 
   charge *chglist, *chgend, chgdummy;
-  ssystem *sys;
+  ssystem *sys, *SetupMulti();
 
   memcount = 0;
 
@@ -130,7 +106,7 @@ main(int argc, char **argv)
   num_mutualfil = 0;
   num_found = 0;
   num_perp = 0;
-  
+
   opts = indsys->opts;
 
   tol = opts->tol;
@@ -145,7 +121,6 @@ main(int argc, char **argv)
     fp = stdin;
   }
   else {
-    /* SRW -- read ascii file */
     fp = fopen(opts->fname, "r");
     if (fp == NULL) {
       printf("Couldn't open %s\n", opts->fname);
@@ -156,20 +131,20 @@ main(int argc, char **argv)
 
   /* read in geometry */
   err = readGeom(fp, indsys);
-  if (err != 0) 
+  if (err != 0)
     return err;
 
   fclose(fp);
 
   /*  fprintf(stdout,"Number of nodes before breaking up: %d\n",
       indsys->num_nodes); */
-  
+
   /* regurgitate input file to stdout */
   if (opts->regurgitate == TRUE) {
     regurgitate(indsys);
   }
 
-  if ((opts->makeFastCapFile & HIERARCHY) 
+  if ((opts->makeFastCapFile & HIERARCHY)
       && !(opts->makeFastCapFile & (SIMPLE | REFINED)))
     /* the hierarchy has been dumped already, and nothing more to do. so quit*/
     return 0;
@@ -199,7 +174,7 @@ main(int argc, char **argv)
   num_fils = 0;
   chgend = &chgdummy;
 
-  for(seg = indsys->segment; seg != NULL; seg = seg->next) 
+  for(seg = indsys->segment; seg != NULL; seg = seg->next)
     chgend = assignFil(seg, &num_fils, chgend);
 
   indsys->num_fils = num_fils;
@@ -212,10 +187,6 @@ main(int argc, char **argv)
 
   starttimer;
 
-#if SUPERCON == ON
-  set_rvals(indsys, 2*PI*indsys->fmin);
-#endif
-
   /* set up multipole stuff */
   sys = SetupMulti(chglist, indsys);
 
@@ -227,7 +198,7 @@ main(int argc, char **argv)
   stoptimer;
   ftimes[5] = dtime;
 
-  if (indsys->opts->debug == ON) 
+  if (indsys->opts->debug == ON)
     printf("Time for Multipole Setup: %lg\n",dtime);
 
   starttimer;
@@ -244,7 +215,7 @@ main(int argc, char **argv)
      that they are marked before regular ground plane meshes  */
   find_hole_meshes(indsys);
 
-  /* determine if a subset of columns is to be computed and assign 
+  /* determine if a subset of columns is to be computed and assign
      col_Yindex.  This will happen if -x option is used. */
   num_sub_extern = indsys->num_sub_extern
                        = pick_subset(opts->portlist, indsys);
@@ -253,10 +224,9 @@ main(int argc, char **argv)
   ftimes[6] = dtime;
 
   /* Write to Zc.mat only if we aren't only running for visualization */
-  if ( !(opts->makeFastCapFile & (SIMPLE | REFINED)) 
+  if ( !(opts->makeFastCapFile & (SIMPLE | REFINED))
        && !(opts->orderROM > 0 && opts->onlyROM)   ) {
     concat4(outfname,"Zc",opts->suffix,".mat");   /* put filnames together */
-    /* SRW -- this is ascii data */
     fp3 = fopen(outfname, "w");
     if (fp3 == NULL) {
       printf("couldn't open file %s\n",outfname);
@@ -277,11 +247,11 @@ main(int argc, char **argv)
     if (num_sub_extern != indsys->num_extern)
       for(ext = indsys->externals; ext != NULL; ext=ext->next) {
         if (ext->col_Yindex != -1)
-          fprintf(fp3,"Col %d: port name: %s\n", 
+          fprintf(fp3,"Col %d: port name: %s\n",
                   ext->col_Yindex+1,ext->portname);
       }
   }
-    
+
   /* count nodes */
   indsys->num_real_nodes = 0;
   indsys->num_nodes = 0;
@@ -291,14 +261,14 @@ main(int argc, char **argv)
     if (getrealnode(node) == node) {
       indsys->num_real_nodes++;
       if (last + 1 != i) {
-      /* printf("Non equivalent nodes must be listed first??, 
+      /* printf("Non equivalent nodes must be listed first??,
 	 no I take that back.\n"); */
       /* exit(1); */
       }
       last = i;
     }
   }
-  
+
   /* CMS 7/3/92 ------------------------------------------------------------*/
   planemeshes = 0;
   nonp = 0;
@@ -310,13 +280,13 @@ main(int argc, char **argv)
   }
   /*------------------------------------------------------------------------*/
 
-/* moved lower for shading 
+/* moved lower for shading
   if (opts->makeFastCapFile & REFINED) {
     fprintf(stdout, "Making refined zbuf file...");
     fflush(stdout);
 
     concat4(outfname,"zbuffile2",opts->suffix,"");
-    
+
 
     concat4(outfname2,outfname,"_","shadings");
     writefastcap(outfname, outfname2, indsys);
@@ -335,7 +305,7 @@ main(int argc, char **argv)
 
   indsys->extra_meshes = tree_meshes;
 
-#if 1==0 
+#if 1==0
   unimplemented junk
   indsys->extra_meshes = estimate_extra_meshes(indsys->trees, FILS_PER_MESH);
 #endif
@@ -352,7 +322,7 @@ main(int argc, char **argv)
   fmax = indsys->fmax;
   logofstep = indsys->logofstep;
 
-  /*  dont_form_Z = fmin == 0 && opts->mat_vect_prod == DIRECT 
+  /*  dont_form_Z = fmin == 0 && opts->mat_vect_prod == DIRECT
                         && opts->soln_technique == ITERATIVE; */
 
   dont_form_Z = fmin == 0 && opts->soln_technique == LUDECOMP;
@@ -365,7 +335,7 @@ main(int argc, char **argv)
   printf("Number of nodes:     %10d\n", num_nodes);
   printf("Number of meshes:    %10d\n", num_mesh);
   printf("          ----from tree:                   %d \n",tree_meshes);
-  printf("          ----from planes: (before holes)  %d \n",planemeshes);  
+  printf("          ----from planes: (before holes)  %d \n",planemeshes);
                                                             /* CMS 7/6/92 */
   printf("Number of conductors:%10d   (rows of matrix in Zc.mat) \n",
 	 num_extern);
@@ -373,14 +343,14 @@ main(int argc, char **argv)
 	 num_sub_extern);
 
   printf("Number of real nodes:%10d\n", num_real_nodes);  /* non equivalent */
-  
+
 /*  A = MatrixAlloc(num_real_nodes, num_fils, sizeof(double)); */
   if (opts->mat_vect_prod == DIRECT || opts->soln_technique == LUDECOMP) {
 /*  indsys->M = MatrixAlloc(num_fils, num_mesh, sizeof(double)); */
     if (!dont_form_Z)
       indsys->Z = MatrixAlloc(num_fils, num_fils, sizeof(double));
 
-    /* let's save space and allocate this later */
+    /* let's save space and allocate this later
     /* indsys->MtZM = (CX **)MatrixAlloc(num_mesh, num_mesh, sizeof(CX)); */
   }
   indsys->FinalY = (CX **)MatrixAlloc(num_extern, num_sub_extern, sizeof(CX));
@@ -396,9 +366,9 @@ main(int argc, char **argv)
   indsys->Precond = (PRE_ELEMENT **)MattAlloc(num_mesh, sizeof(PRE_ELEMENT *));
   if (1 == 1) {  /* let's always dump the residual history */
     indsys->resids = MatrixAlloc(num_sub_extern,user_maxiters, sizeof(double));
-    indsys->resid_real = MatrixAlloc(num_sub_extern, user_maxiters, 
+    indsys->resid_real = MatrixAlloc(num_sub_extern, user_maxiters,
 				     sizeof(double));
-    indsys->resid_imag = MatrixAlloc(num_sub_extern, user_maxiters, 
+    indsys->resid_imag = MatrixAlloc(num_sub_extern, user_maxiters,
 				     sizeof(double));
     indsys->niters = (double *)MattAlloc(num_sub_extern, sizeof(double));
   }
@@ -446,7 +416,7 @@ main(int argc, char **argv)
   num_mesh = indsys->num_mesh;  /* actual number of meshes */
 
   /* let's save a little space and allocate MZMt now. */
-  if (!dont_form_Z 
+  if (!dont_form_Z
       && (opts->mat_vect_prod == DIRECT || opts->soln_technique == LUDECOMP))
     indsys->MtZM = (CX **)MatrixAlloc(num_mesh, num_mesh, sizeof(CX));
 
@@ -467,12 +437,12 @@ main(int argc, char **argv)
   stoptimer;
   ftimes[1] = dtime;
 
-  if (indsys->opts->debug == ON) 
+  if (indsys->opts->debug == ON)
     printf("Time to Form M and Z: %lg\n",dtime);
 
-  printf("Total Memory allocated: %ld kilobytes\n",memcount/1024);
+  printf("Total Memory allocated: %d kilobytes\n",memcount/1024);
 
-  if (indsys->opts->debug == ON) 
+  if (indsys->opts->debug == ON)
     printf("Memory used and freed by lookup table: %d kilobytes\n",
 	   get_table_mem());
 
@@ -502,8 +472,7 @@ main(int argc, char **argv)
   if (indsys->opts->debug == ON) {
     /* open Ycond.mat */
     concat4(outfname,"Ycond",opts->suffix,".mat");
-    /* SRW -- this is binary data */
-    fp = fopen(outfname, "wb");
+    fp = fopen(outfname, "w");
     if (fp == NULL) {
       printf("couldn't open file %s\n",outfname);
       exit(1);
@@ -513,8 +482,7 @@ main(int argc, char **argv)
   /* open b.mat */
   if (opts->dumpMats != OFF) {
     concat4(outfname,"b",opts->suffix,".mat");
-    /* SRW -- this is binary data */
-    if ((fb = fopen(outfname,"wb")) == NULL)
+    if ((fb = fopen(outfname,"w")) == NULL)
       fprintf(stderr, "No open fb\n");
   }
 
@@ -545,23 +513,22 @@ main(int argc, char **argv)
       printf("multiplying M*(L)*transpose(M)for model order reduction\n");
       /* this form of storage isn't the best */
       formMLMt(indsys);      /*form (M^t)*(L)*M and store in indys->MtZM*/
-      
 
-      actual_order = ArnoldiROM(B, C, (double **)NULL, (char**)MRMt, num_mesh,
-                                num_extern, num_extern, opts->orderROM, 
+
+      actual_order = ArnoldiROM(B, C, (double **)NULL, MRMt, num_mesh,
+                                num_extern, num_extern, opts->orderROM,
                                 realMatVect, indsys, sys, chglist);
     }
     else if (indsys->opts->mat_vect_prod == MULTIPOLE)
-      actual_order = ArnoldiROM(B, C, (double **)NULL, (char**)MRMt, num_mesh, 
-                                num_extern, num_extern, opts->orderROM, 
-                                realComputePsi, indsys, sys, chglist); 
+      actual_order = ArnoldiROM(B, C, (double **)NULL, MRMt, num_mesh,
+                                num_extern, num_extern, opts->orderROM,
+                                realComputePsi, indsys, sys, chglist);
 
     if (indsys->opts->debug == ON) {
 #if 1==0
       /* open orig.mat */
       concat4(outfname,"orig",opts->suffix,".mat");
-      /* SRW -- this is binary data */
-      if ((fROM = fopen(outfname,"wb")) == NULL)
+      if ((fROM = fopen(outfname,"w")) == NULL)
         fprintf(stderr, "No open fROM\n");
       /* dump what we have of the original system */
       dumpROMbin(fROM, NULL, B, C, NULL,
@@ -571,7 +538,6 @@ main(int argc, char **argv)
 
     /* open rom.m */
       concat4(outfname,"rom",opts->suffix,".m");
-      /* SRW -- this is ascii data */
       if ((fROM = fopen(outfname,"w")) == NULL)
         fprintf(stderr, "No open fROM\n");
 
@@ -584,12 +550,11 @@ main(int argc, char **argv)
 
     /* generate equivalent circuit */
     concat4(outfname,"equiv_circuitROM",opts->suffix,".spice");
-    /* SRW -- this is ascii data */
     if ((fROM = fopen(outfname,"w")) == NULL)
       fprintf(stderr, "No open fROM\n");
     /* now dump the reduced order model */
     dumpROMequiv_circuit(fROM, indsys->Ar, indsys->Br, indsys->Cr, indsys->Dr,
-            actual_order * num_extern, num_extern, num_extern, 
+            actual_order * num_extern, num_extern, num_extern,
             indsys->title, opts->suffix, indsys);
     /* close and save away the file */
     fclose(fROM);
@@ -600,18 +565,14 @@ main(int argc, char **argv)
   if (opts->orderROM > 0 && opts->onlyROM)
     exit(0);
 
-  for(freq = fmin, m = 0; 
+  for(freq = fmin, m = 0;
       (fmin != 0 && freq <= fmax*1.001) || (fmin == 0 && m == 0);
       m++, freq = (fmin != 0 ? pow(10.0,log10(fmin) + m*logofstep) : 0.0)) {
     printf("Frequency = %lg\n",freq);
 
     starttimer;
-#if SUPERCON == ON
-    if (freq != fmin)
-      fillZ_diag(indsys, 2*PI*freq);
-#endif
 
-    if (!dont_form_Z 
+    if (!dont_form_Z
         && (opts->mat_vect_prod == DIRECT || opts->soln_technique==LUDECOMP)) {
       printf("multiplying M*(R + jL)*transpose(M)\n");
       formMZMt(indsys);      /*form transpose(M)*(R+jL)*M  (no w) */
@@ -620,8 +581,7 @@ main(int argc, char **argv)
 	if (m == 0) {
 	  if (opts->kind & MATLAB) {
             concat4(outfname,"MZMt",opts->suffix,".mat");
-	    /* SRW -- this is binary data */
-	    if ( (fp2 = fopen(outfname,"wb")) == NULL) {
+	    if ( (fp2 = fopen(outfname,"w")) == NULL) {
 	      printf("Couldn't open file\n");
 	      exit(1);
 	    }
@@ -631,7 +591,6 @@ main(int argc, char **argv)
 	  }
 	  if (opts->kind & TEXT) {
             concat4(outfname,"MZMt",opts->suffix,".dat");
-	    /* SRW -- this is ascii data */
 	    if ( (fp2 = fopen(outfname,"w")) == NULL) {
 	      printf("Couldn't open file\n");
 	      exit(1);
@@ -644,7 +603,7 @@ main(int argc, char **argv)
       }
 
       printf("putting in frequency \n");
-      
+
       /* put in frequency */
       for(i = 0; i < num_mesh; i++)
 	for(j = 0; j < num_mesh; j++)
@@ -658,8 +617,8 @@ main(int argc, char **argv)
 
     if (opts->soln_technique == ITERATIVE) {
       if (indsys->precond_type == LOC) {
-	printf("Forming local inversion preconditioner.\n");
-	
+	printf("Forming local inversion preconditioner\n");
+
 	if (opts->mat_vect_prod == DIRECT)
 	  indPrecond_direct(sys, indsys, 2*PI*freq);
 	else if (opts->mat_vect_prod == MULTIPOLE)
@@ -671,25 +630,16 @@ main(int argc, char **argv)
 	}
       }
       else if (indsys->precond_type == SPARSE) {
-	printf("Forming sparse matrix preconditioner.\n");
+	printf("Forming sparse matrix preconditioner..\n");
 	fill_spPre(sys, indsys, 2*PI*freq);
 
 	if (m == 0) {
-#ifdef SRW0814
-	  double stime = srw_seconds(), etime;
-#endif
 	  if (indsys->opts->debug == ON)
 	    printf("Number of nonzeros before factoring: %d\n",
 		   spElementCount(indsys->sparMatrix));
 
-
 	  /* Reorder and Factor the matrix */
 	  err = spOrderAndFactor(indsys->sparMatrix, NULL, 1e-3, 0.0, 1);
-#ifdef SRW0814
-	  etime = srw_seconds();
-	  printf("Reorder and factor time %g\n", etime - stime);
-      fflush(stdout);
-#endif
 
 	  if (indsys->opts->debug == ON)
 	    printf("Number of fill-ins after factoring: %d\n",
@@ -729,7 +679,7 @@ main(int argc, char **argv)
                  spElementCount(indsys->sparMatrix));
 
         /* Reorder and Factor the matrix */
-        /* since w = 0, this matrix is real but all complex computations 
+        /* since w = 0, this matrix is real but all complex computations
            are done since that is how the sparse package was compiled.
            But changing it doesn't help that much.  Must be dominated by
            reordering and such.*/
@@ -755,14 +705,14 @@ main(int argc, char **argv)
       printf("Time spent on forming Precond: %lg\n",dtime);
 
     starttimer;
-    for(ext = get_next_ext(indsys->externals), i=0; ext != NULL; 
+    for(ext = get_next_ext(indsys->externals), i=0; ext != NULL;
 	                       ext = get_next_ext(ext->next),i++) {
       printf("conductor %d from node %s\n",i, get_a_name(ext->source));
 
       /* initialize b */
       for(j = 0; j < num_mesh; j++)
 	b[j] = x0[j] = CXZERO;
-      
+
       fill_b(ext, b);
 
       sprintf(fname, "b%d_%d",m,i);
@@ -777,10 +727,10 @@ main(int argc, char **argv)
 
       if (opts->soln_technique == ITERATIVE) {
 	printf("Calling gmres...\n");
-	if (opts->mat_vect_prod == MULTIPOLE) 
+	if (opts->mat_vect_prod == MULTIPOLE)
 	  gmres(MtZM, b, x0, inner, SetupComputePsi, num_mesh, maxiters, tol,
 		sys, chglist, 2*PI*freq, R, indsys, i);
-	else 
+	else
 	  gmres(MtZM, b, x0, inner, directmatvec,    num_mesh, maxiters, tol,
 		sys, chglist, 2*PI*freq, R, indsys, i);
 
@@ -790,14 +740,14 @@ main(int argc, char **argv)
 	    x0[k] = vect[k];
 	}
 	else if (indsys->precond_type == SPARSE)
-	  spSolve(indsys->sparMatrix, (spREAL*)x0, (spREAL*)x0);
-	  
+	  spSolve(indsys->sparMatrix, x0, x0);
+
       }
-      else 
+      else
         if (!dont_form_Z)
           cx_lu_solve(MtZM, x0, b, num_mesh);
-        else 
-          spSolve(indsys->sparMatrix, (spREAL*)b, (spREAL*)x0);
+        else
+          spSolve(indsys->sparMatrix, b, x0);
 
       if (opts->dumpMats & GRIDS)
 	/* Do stuff to look at groundplane current distribution */
@@ -807,8 +757,7 @@ main(int argc, char **argv)
       extractYcol(indsys->FinalY, x0, ext, indsys->externals);
 
       if (indsys->opts->debug == ON) {
-	/* SRW -- this is binary data */
-	fptemp = fopen("Ytemp.mat", "wb");
+	fptemp = fopen("Ytemp.mat", "w");
 	if (fptemp == NULL) {
 	  printf("couldn't open file %s\n","Ytemp.mat");
 	  exit(1);
@@ -837,18 +786,17 @@ main(int argc, char **argv)
 
     /* dump matrix to text file */
     if (num_extern == num_sub_extern) {
-      fprintf(fp3, "Impedance matrix for frequency = %lg %d x %d\n ", freq,
-	      num_extern, num_extern);
+      fprintf(fp3, "%lg  ", freq);
       cx_invert(indsys->FinalY, num_extern);
     }
     else
       fprintf(fp3, "ADMITTANCE matrix for frequency = %lg %d x %d\n ", freq,
 	      num_extern, num_sub_extern);
-      
-    cx_dumpMat_totextfile(fp3, indsys->FinalY, num_extern, num_sub_extern);
+
+    cx_dumpMat_totextfile(fp3, indsys->FinalY, num_extern, num_sub_extern, freq);
     fflush(fp3);
   }
-  
+
   if (indsys->opts->debug == ON)
     fclose(fp);
 
@@ -858,7 +806,7 @@ main(int argc, char **argv)
 
   printf("\nAll impedance matrices dumped to file Zc%s.mat\n\n",opts->suffix);
   totaltime = 0;
-  for(i = 0; i < TIMESIZE; i++) 
+  for(i = 0; i < TIMESIZE; i++)
     totaltime += ftimes[i];
 
   if (indsys->opts->debug == ON) {
@@ -885,11 +833,13 @@ main(int argc, char **argv)
       fprintf(stderr, "%d\n", membins[i]);
 #endif
 
-  return (0);
 }
 
 /* this will divide a rectangular segment into many filaments */
-charge *assignFil(SEGMENT *seg, int *num_fils, charge *chgptr)
+charge *assignFil(seg, num_fils, chgptr)
+SEGMENT *seg;
+int *num_fils;
+charge *chgptr;
 {
 
   int i,j,k;
@@ -910,7 +860,7 @@ charge *assignFil(SEGMENT *seg, int *num_fils, charge *chgptr)
   int indices[4], row, col;
   double r_width, r_height;
             /* ratio of element sizes (for geometrically increasing size)*/
- 
+
   Hinc = seg->hinc;
   Winc = seg->winc;
   r_height = seg->r_height;
@@ -931,7 +881,7 @@ charge *assignFil(SEGMENT *seg, int *num_fils, charge *chgptr)
   dummysurf->type = CONDTR;
   dummysurf->next = NULL;
   dummysurf->prev = NULL;
-  
+
   /*  To make the filaments have geometrically decreasing areas */
   /* Hdiv and Wdiv are 1/(smallest Width) */
 
@@ -1010,9 +960,9 @@ charge *assignFil(SEGMENT *seg, int *num_fils, charge *chgptr)
 
     delh = (seg->height)*(0.5 - h_from_edge);
 
-    if (delh < 0.0 && fabs(delh/seg->height) > EPS) 
+    if (delh < 0.0 && fabs(delh/seg->height) > EPS)
       printf("uh oh, delh < 0. delh/height = %lg\n", delh/seg->height);
-    
+
     w_from_edge = 0;
     min_width = 1.0/Wdiv;
     for(j = 0; j < Winc/2 || (Winc%2 == 1 && j == Winc/2); j++) {
@@ -1028,15 +978,15 @@ charge *assignFil(SEGMENT *seg, int *num_fils, charge *chgptr)
 	w_from_edge += min_width/2;
       else
 	w_from_edge += min_width/2*pow(r_width,(double)(j-1))*(1+r_width);
-      
+
       delw = (seg->width)*(0.5 - w_from_edge);
 
-      if (delw < 0.0 && fabs(delw/seg->width) > EPS) 
+      if (delw < 0.0 && fabs(delw/seg->width) > EPS)
 	printf("uh oh, delw < 0. delw/width = %lg\n", delw/seg->width);
 /*    tempfil = filptr; */
       countfils = 0;
-      
-      row = i; 
+
+      row = i;
       col = j;
       if (row%2 == 1)
 	col = (Winc - 1) - col;
@@ -1052,10 +1002,10 @@ charge *assignFil(SEGMENT *seg, int *num_fils, charge *chgptr)
       filptr->pchg = &ctemp[counter++];
 /*    filptr++; */
       countfils++;
-      
+
       /* do symmetric element wrt y */
       if(j != Winc/2) {
-	row = i; 
+	row = i;
 	col = (Winc - 1) - j;
 	if (row%2 == 1)
 	  col = (Winc - 1) - col;
@@ -1072,10 +1022,10 @@ charge *assignFil(SEGMENT *seg, int *num_fils, charge *chgptr)
 /*	filptr++; */
 	countfils++;
       }
-      
+
       /* wrt z */
       if(i != Hinc/2) {
-        row = (Hinc - 1) - i; 
+        row = (Hinc - 1) - i;
 	col = j;
 	if (row%2 == 1)
 	  col = (Winc - 1) - col;
@@ -1092,10 +1042,10 @@ charge *assignFil(SEGMENT *seg, int *num_fils, charge *chgptr)
 	filptr++;
 	countfils++;
       }
-      
+
       /* wrt z and y */
       if( i != Hinc/2 && j != Winc/2) {
-	row = (Hinc - 1) - i; 
+	row = (Hinc - 1) - i;
 	col = (Winc - 1) - j;
 	if (row%2 == 1)
 	  col = (Winc - 1) - col;
@@ -1112,7 +1062,7 @@ charge *assignFil(SEGMENT *seg, int *num_fils, charge *chgptr)
 /*	filptr++; */
 	countfils++;
       }
-      
+
       for(k = 0; k < countfils; k++) {
 	tempfil = &(seg->filaments[indices[k]]);
 	tempfil->length = seg->length;
@@ -1141,7 +1091,7 @@ charge *assignFil(SEGMENT *seg, int *num_fils, charge *chgptr)
 
 /*	tempfil++; */
       }
-      
+
     }
   }
 
@@ -1158,7 +1108,8 @@ charge *assignFil(SEGMENT *seg, int *num_fils, charge *chgptr)
 }
 
 
-double **MatrixAlloc(int rows, int cols, int size)
+double **MatrixAlloc(rows, cols, size)
+int rows, cols, size;
 {
 
   double **temp;
@@ -1170,7 +1121,7 @@ double **MatrixAlloc(int rows, int cols, int size)
         exit(1);
       }
 
-  for(i = 0; i < rows; i++) 
+  for(i = 0; i < rows; i++)
     temp[i] = (double *)MattAlloc(cols,size);
 
   if (temp[rows - 1] == NULL) {
@@ -1180,7 +1131,8 @@ double **MatrixAlloc(int rows, int cols, int size)
   return(temp);
 }
 
-void fillA(SYS *indsys)
+void fillA(indsys)
+SYS *indsys;
 {
   SEGMENT *seg;
   NODES *node1, *node2, *node;
@@ -1209,12 +1161,12 @@ void fillA(SYS *indsys)
     }
     for(i = 0; i < seg->num_fils; i++) {
       fil = &seg->filaments[i];
-      Alist[node1->index] = insert_in_list(make_melement(fil->filnumber, 
+      Alist[node1->index] = insert_in_list(make_melement(fil->filnumber,
 							 fil, 1),
 					   Alist[node1->index]);
-      Alist[node2->index] = insert_in_list(make_melement(fil->filnumber, 
+      Alist[node2->index] = insert_in_list(make_melement(fil->filnumber,
 							 fil, -1),
-					   Alist[node2->index]);	   
+					   Alist[node2->index]);
     }
   }
 
@@ -1229,13 +1181,15 @@ void fillA(SYS *indsys)
 /* it maps a matrix of mesh currents to branch currents */
 /* it might actually be what some think of as the transpose of M */
 /* Here, M*Im = Ib  where Im are the mesh currents, and Ib the branch */
-/* 6/92 I added Mlist which is a vector of linked lists to meshes. 
+/* 6/92 I added Mlist which is a vector of linked lists to meshes.
    This replaces M.  But I keep M around for checking things in matlab. */
-void old_fillM(SYS *indsys)
+void old_fillM(indsys)
+SYS *indsys;
 {
 }
-    
-void fillZ(SYS *indsys)
+
+void fillZ(indsys)
+SYS *indsys;
 {
   int i, j, k, m;
   FILAMENT *fil_j, *fil_m;
@@ -1252,28 +1206,19 @@ void fillZ(SYS *indsys)
     for(j = 0; j < seg1->num_fils; j++) {
       fil_j = &(seg1->filaments[j]);
       filnum_j = fil_j->filnumber;
-#if SUPERCON == ON
-      R[filnum_j] = fil_j->length*seg1->r1/fil_j->area;
-#else
       R[filnum_j] = resistance(fil_j, seg1->sigma);
-#endif
-      if (indsys->opts->mat_vect_prod != MULTIPOLE 
+      if (indsys->opts->mat_vect_prod != MULTIPOLE
           && !indsys->dont_form_Z) {
 	for(seg2 = indsys->segment; seg2 != NULL; seg2 = seg2->next) {
 	  for(m = 0; m < seg2->num_fils; m++) {
 	    fil_m = &(seg2->filaments[m]);
 	    filnum_m = fil_m->filnumber;
-	    if (filnum_m == filnum_j) {
+	    if (filnum_m == filnum_j)
 	      Z[filnum_m][filnum_m] = selfterm(fil_m); /* do self-inductance */
-#if SUPERCON == ON
-	      if (seg1->lambda != 0.0)
-	        Z[filnum_m][filnum_m] += seg1->r2*fil_j->length/fil_j->area;
-#endif
-	    }
 	    else
 	      if (filnum_m > filnum_j) /*we haven't done it yet */
-		
-		Z[filnum_m][filnum_j] 
+
+		Z[filnum_m][filnum_j]
 		  = Z[filnum_j][filnum_m] = mutual(fil_j, fil_m);
 	  }
 	}
@@ -1282,141 +1227,40 @@ void fillZ(SYS *indsys)
   }
 }
 
-#if SUPERCON == ON
-/* Have to reset the diag elements for each omega, if superconductor
- * (lambda != 0) and sigma != 0.
- */
-void fillZ_diag(SYS *indsys, double omega)
-{
-  int i, j;
-  FILAMENT *fil_j;
-  int filnum_j;
-  SEGMENT *seg1;
-  double **Z, *R;
-  double tmp, tmp1, dnom, r1, r2;
-
-  Z = indsys->Z;
-  R = indsys->R;
-
-  for(seg1 = indsys->segment; seg1 != NULL; seg1 = seg1->next) {
-    if (seg1->lambda != 0.0 && seg1->sigma != 0.0) {
-      /* segment is a superconductor with frequency dependent terms */
-      tmp = MU0*seg1->lambda*seg1->lambda;
-      tmp1 = tmp*omega;
-      dnom = tmp1*seg1->sigma;
-      dnom = dnom*dnom + 1.0;
-      seg1->r1 = r1 = seg1->sigma*tmp1*tmp1/dnom;
-      seg1->r2 = r2 = tmp/dnom;
-      for(j = 0; j < seg1->num_fils; j++) {
-        fil_j = &(seg1->filaments[j]);
-        filnum_j = fil_j->filnumber;
-        R[filnum_j] = fil_j->length*r1/fil_j->area;
-        Z[filnum_j][filnum_j] = selfterm(fil_j) +
-          r2*fil_j->length/fil_j->area;
-      }
-    }
-  }
-}
-
-/*
- * Theory:
- *    In normal metal:     (1)  del X H = -i*omega*mu*sigma * H
- *    In superconductor:   (2)  del X H = (1/lambda)^2 * H
- * 
- *    In fasthenry, (1) is solved, so the game is to replace sigma in (1)
- *    with a complex variable that includes and reduces to (2).  We choose
- * 
- *    sigma_prime = sigma + i/(omega*mu*lambda^2)
- * 
- *    Then, using sigma_prime in (1) rather than sigma, one obtains an
- *    expression that reduces to (2) at omega = 0,  yet retains properties
- *    of (1).  This is the two-fluid model, where the sigma in sigma_prime
- *    represents the conductivity due to unpaired electrons.
- * 
- *    Since sigma_prime blows up at omega = 0, we work with the impedance,
- *    which we take as z = r1 + i*omega*r2 = i/sigma_prime.  The r1 and
- *    r2 variables are thus
- * 
- *           (3) r1 =    sigma*(omega*mu*lambda^2)^2
- *                    --------------------------------
- *                    (sigma*omega*mu*lambda^2)^2 + 1
- * 
- *           (4) r2 =           mu*lambda^2
- *                    --------------------------------
- *                    (sigma*omega*mu*lambda^2)^2 + 1
- */
-
-/* Set the r1, r2 entries to the appropriate values.  The r1 entry
- * comes from the real value of sigma (1/sigma for normal metals).
- * The r2 entry comes from the imaginary part of sigma, which reduces
- * to MU0*lambda^2 when the real part of sigma (default 0 for
- * superconductors) is negligible, and is 0 for normal metals.
- * The r2 term contributes to the inductance matrix diagonal.
- */
-void set_rvals(SYS *indsys, double omega)
-{
-  SEGMENT *seg1;
-  double tmp, tmp1, dnom, r1, r2;
-
-  for(seg1 = indsys->segment; seg1 != NULL; seg1 = seg1->next) {
-    if (seg1->lambda != 0.0) {
-      /* segment is a superconductor */
-      tmp = MU0*seg1->lambda*seg1->lambda;
-      if (seg1->sigma != 0.0) {
-        /* the terms become frequency dependent */
-        tmp1 = tmp*omega;
-        dnom = tmp1*seg1->sigma;
-        dnom = dnom*dnom + 1.0;
-        r1 = seg1->sigma*tmp1*tmp1/dnom;
-        r2 = tmp/dnom;
-      }
-      else {
-        r1 = 0.0;
-        r2 = tmp;
-      }
-    }
-    else {
-      r1 = 1/seg1->sigma;
-      r2 = 0.0;
-    }
-    seg1->r1 = r1;
-    seg1->r2 = r2;
-  }
-}
-#endif
-
 /* calculates resistance of filament */
-double resistance(FILAMENT *fil, double sigma)
-/* double sigma;  conductivitiy */
+double resistance(fil, sigma)
+FILAMENT *fil;
+double sigma;  /* conductivitiy */
 {
   return  fil->length/(sigma * fil->area);
 }
 
 /* mutual inductance functions moved to mutual.c */
 
-/*
-int matherr(struct exception *exc)
+int matherr(exc)
+struct exception *exc;
 {
   printf("Err in math\n");
   return(0);
 }
-*/
 
 /* This counts the nonblank lines of the file  fp (unused) */
-int countlines(FILE *fp)
+int countlines(fp)
+FILE *fp;
 {
   int count;
   char temp[MAXCHARS], *returnstring;
 
   count = 0;
   while( fgets(temp,MAXCHARS, fp) != NULL)
-    if ( local_notblankline(temp) ) count++;
+    if ( notblankline(temp) ) count++;
 
   return count;
 }
 
 /* returns 1 if string contains a nonspace character */
-static int local_notblankline(char *string)
+static int notblankline(string)
+char *string;
 {
    while( *string!='\0' && isspace(*string))
      string++;
@@ -1427,7 +1271,8 @@ static int local_notblankline(char *string)
 
 /* This saves various matrices to files and optionally calls fillA() if
    the incidence matrix, A, is requested */
-void savemats(SYS *indsys)
+savemats(indsys)
+SYS *indsys;
 {
   int i, j;
   FILE *fp, *fp2;
@@ -1437,7 +1282,7 @@ void savemats(SYS *indsys)
   int num_mesh, num_fils, num_real_nodes;
   double *Mrow;   /* one row of M */
   double **Z, *R;
-  int counter, nnz, nnz0;
+  int machine, counter, nnz, nnz0;
   ind_opts *opts;
   MELEMENT *mesh;
   MELEMENT **Mlist = indsys->Mlist;
@@ -1458,7 +1303,6 @@ void savemats(SYS *indsys)
 
     if (opts->kind & TEXT) {
       concat4(outfname,"M",opts->suffix,".dat");
-      /* SRW -- this is ascii data */
       if ( (fp2 = fopen(outfname,"w")) == NULL) {
 	printf("Couldn't open file\n");
 	exit(1);
@@ -1469,8 +1313,7 @@ void savemats(SYS *indsys)
 
     if (opts->kind & MATLAB) {
       concat4(outfname,"M",opts->suffix,".mat");
-      /* SRW -- this is binary data */
-      if ( (fp = fopen(outfname,"wb")) == NULL) {
+      if ( (fp = fopen(outfname,"w")) == NULL) {
 	printf("Couldn't open file\n");
 	exit(1);
       }
@@ -1489,13 +1332,12 @@ void savemats(SYS *indsys)
     nnz = nnz_inM(indsys->Alist, num_real_nodes);
 
     /* how many non-zeros in ground node 0? */
-    nnz0 = nnz_inM(indsys->Alist, 1);  
+    nnz0 = nnz_inM(indsys->Alist, 1);
 
     /* now dump it to a file without ground node */
 
     if (opts->kind & TEXT) {
       concat4(outfname,"A",opts->suffix,".dat");
-      /* SRW -- this is ascii data */
       if ( (fp2 = fopen(outfname,"w")) == NULL) {
 	printf("Couldn't open file\n");
 	exit(1);
@@ -1506,8 +1348,7 @@ void savemats(SYS *indsys)
 
     if (opts->kind & MATLAB) {
       concat4(outfname,"A",opts->suffix,".mat");
-      /* SRW -- this is binary data */
-      if ( (fp = fopen(outfname,"wb")) == NULL) {
+      if ( (fp = fopen(outfname,"w")) == NULL) {
 	printf("Couldn't open file\n");
 	exit(1);
       }
@@ -1518,7 +1359,6 @@ void savemats(SYS *indsys)
 
   /* save text files */
   if (opts->kind & TEXT && opts->dumpMats & DUMP_RL) {
-    /* SRW -- this is ascii data */
     /*
     if ( (fp2 = fopen("M.dat","w")) == NULL) {
       printf("Couldn't open file\n");
@@ -1532,35 +1372,33 @@ void savemats(SYS *indsys)
       fillMrow(indsys->Mlist, i, Mrow);
       dumpVec_totextfile(fp2, Mrow, num_fils);
     }
-    
+
     fclose(fp2);
     */
 
     concat4(outfname,"R",opts->suffix,".dat");
-    /* SRW -- this is ascii data */
     if ( (fp2 = fopen(outfname,"w")) == NULL) {
       printf("Couldn't open file\n");
       exit(1);
     }
-    
+
     dumpVec_totextfile(fp2, R, num_fils);
-    
+
     fclose(fp2);
-    
+
     if (!indsys->dont_form_Z && indsys->opts->mat_vect_prod == DIRECT) {
       /* do imaginary part of Z */
-      
+
       concat4(outfname,"L",opts->suffix,".dat");
-      /* SRW -- this is ascii data */
       if ( (fp2 = fopen(outfname,"w")) == NULL) {
 	printf("Couldn't open file\n");
 	exit(1);
       }
-      
+
       dumpMat_totextfile(fp2, Z, num_fils, num_fils);
-      
+
       fclose(fp2);
-      
+
     }
     else {
       if (indsys->dont_form_Z)
@@ -1571,14 +1409,18 @@ void savemats(SYS *indsys)
   }
 
   /* Save Matlab files */
-  
+
   if (opts->kind & MATLAB && opts->dumpMats & DUMP_RL) {
     concat4(outfname,"RL",opts->suffix,".mat");
-    /* SRW -- this is binary data */
-    if ( (fp = fopen(outfname,"wb")) == NULL) {
+    if ( (fp = fopen(outfname,"w")) == NULL) {
       printf("Couldn't open file\n");
       exit(1);
     }
+
+    machine = 1000;
+#ifdef DEC
+    machine = 0000;
+#endif
 
     dumbx =  (double *)malloc(num_fils*sizeof(double));
     dumby =  (double *)malloc(num_fils*sizeof(double));
@@ -1588,7 +1430,7 @@ void savemats(SYS *indsys)
       printf("no space for R\n");
       exit(1);
     }
-    
+
     /* save and print matrices */
 
     /*
@@ -1597,19 +1439,19 @@ void savemats(SYS *indsys)
 
     for(i = 0; i < num_mesh; i++) {
       fillMrow(indsys->Mlist, i, Mrow);
-      savemat_mod(fp, machine_type()+100, "M", num_mesh, num_fils, 0, Mrow, 
+      savemat_mod(fp, machine+100, "M", num_mesh, num_fils, 0, Mrow,
 		  (double *)NULL, i, num_fils);
     }
     */
 
     /* this only saves the real part (savemat_mod.c modified) */
-    savemat_mod(fp, machine_type()+100, "R", 1, num_fils, 0, R, (double *)NULL, 
+    savemat_mod(fp, machine+100, "R", 1, num_fils, 0, R, (double *)NULL,
 		0, num_fils);
-    
+
     if (!indsys->dont_form_Z && indsys->opts->mat_vect_prod == DIRECT) {
       /* do imaginary part of Z */
       for(i = 0; i < num_fils; i++) {
-	savemat_mod(fp, machine_type()+100, "L", num_fils, num_fils, 0, Z[i], 
+	savemat_mod(fp, machine+100, "L", num_fils, num_fils, 0, Z[i],
 		    (double *)NULL, i, num_fils);
       }
     }
@@ -1619,7 +1461,7 @@ void savemats(SYS *indsys)
       else
         printf("L matrix not dumped.  Run with mat_vect_prod = DIRECT if this is desired\n");
     }
-    
+
     /* save vector of filament areas */
     for(tmps = indsys->segment; tmps != NULL; tmps = tmps->next) {
       for(j = 0; j < tmps->num_fils; j++) {
@@ -1630,45 +1472,60 @@ void savemats(SYS *indsys)
 	dumbz[tmpf->filnumber] = tmpf->z[0];
       }
     }
-    savemat_mod(fp, machine_type()+0, "areas", num_fils, 1, 0, dumb,
-        (double *)NULL,0, num_fils);
-    savemat_mod(fp, machine_type()+0, "pos", num_fils, 3, 0, dumbx,
-        (double *)NULL, 0, num_fils);
-    savemat_mod(fp, machine_type()+0, "pos", num_fils, 3, 0, dumby,
-        (double *)NULL, 1, num_fils);
-    savemat_mod(fp, machine_type()+0, "pos", num_fils, 3, 0, dumbz,
-        (double *)NULL, 1, num_fils);
-    
+    savemat_mod(fp, machine+0, "areas", num_fils, 1, 0, dumb, (double *)NULL,0,
+		num_fils);
+    savemat_mod(fp, machine+0, "pos", num_fils, 3, 0, dumbx, (double *)NULL, 0,
+		num_fils);
+    savemat_mod(fp, machine+0, "pos", num_fils, 3, 0, dumby, (double *)NULL, 1,
+		num_fils);
+    savemat_mod(fp, machine+0, "pos", num_fils, 3, 0, dumbz, (double *)NULL, 1,
+		num_fils);
+
     free(dumb);
     free(dumbx);
     free(dumby);
     free(dumbz);
-    
+
     fclose(fp);
   }
 }
 
-void savecmplx(FILE *fp, char *name, CX **Z, int rows, int cols)
+savecmplx(fp, name, Z, rows, cols)
+FILE *fp;
+char *name;
+CX **Z;
+int rows, cols;
 {
   int i,j;
+  int machine;
+
+  machine = 1000;
+#ifdef DEC
+  machine = 0000;
+#endif
 
   /* this only saves the real part (savemat_mod.c modified) one byte per call*/
-  for(i = 0; i < rows; i++) 
-    for(j = 0; j < cols; j++) 
-      savemat_mod(fp, machine_type()+100, name, rows, cols, 1, &Z[i][j].real, 
+  for(i = 0; i < rows; i++)
+    for(j = 0; j < cols; j++)
+      savemat_mod(fp, machine+100, name, rows, cols, 1, &Z[i][j].real,
 		  (double *)NULL, i+j, 1);
 
   /* do imaginary part of Z */
-  for(i = 0; i < rows; i++) 
+  for(i = 0; i < rows; i++)
     for(j = 0; j < cols; j++)
-      savemat_mod(fp, machine_type()+100, name, rows, cols, 0, &Z[i][j].imag, 
+      savemat_mod(fp, machine+100, name, rows, cols, 0, &Z[i][j].imag,
 		  (double *)NULL, 1, 1);
 }
 
 /* saves a complex matrix more efficiently? */
-void savecmplx2(FILE *fp, char *name, CX **Z, int rows, int cols)
+savecmplx2(fp, name, Z, rows, cols)
+FILE *fp;
+char *name;
+CX **Z;
+int rows, cols;
 {
   int i,j;
+  int machine;
   static double *temp;
   static int colmax = 0;
 
@@ -1677,11 +1534,16 @@ void savecmplx2(FILE *fp, char *name, CX **Z, int rows, int cols)
     colmax = cols;
   }
 
+  machine = 1000;
+#ifdef DEC
+  machine = 0000;
+#endif
+
   /* this only saves the real part (savemat_mod.c modified) one byte per call*/
   for(i = 0; i < rows; i++) {
     for(j = 0; j < cols; j++)
       temp[j] = Z[i][j].real;
-    savemat_mod(fp, machine_type()+100, name, rows, cols, 1, temp, 
+    savemat_mod(fp, machine+100, name, rows, cols, 1, temp,
 		(double *)NULL, i, cols);
   }
 
@@ -1689,13 +1551,14 @@ void savecmplx2(FILE *fp, char *name, CX **Z, int rows, int cols)
   for(i = 0; i < rows; i++) {
     for(j = 0; j < cols; j++)
       temp[j] = Z[i][j].imag;
-    savemat_mod(fp, machine_type()+100, name, rows, cols, 0, temp, 
+    savemat_mod(fp, machine+100, name, rows, cols, 0, temp,
 		(double *)NULL, 1, cols);
   }
 }
 
 /* This computes the product M*Z*Mt in a better way than oldformMZMt */
-void formMZMt(SYS *indsys)
+formMZMt(indsys)
+SYS *indsys;
 {
   int m,n,p;
   double tempsum, tempR, tempsumR;
@@ -1758,7 +1621,8 @@ void formMZMt(SYS *indsys)
     }
 }
 
-void oldformMZMt(SYS *indsys)
+oldformMZMt(indsys)
+SYS *indsys;
 {
   int m,n,p;
   double tempsum;
@@ -1795,7 +1659,7 @@ void oldformMZMt(SYS *indsys)
   for(mesh = 0; mesh < num_mesh; mesh++) {
     for(j = 0; j < nfils; j++) {
       tempsum = 0;
-      for(melem = Mlist[mesh]; melem != NULL; melem = melem->mnext) 
+      for(melem = Mlist[mesh]; melem != NULL; melem = melem->mnext)
 	tempsum += L[j][melem->filindex]*melem->sign;
       if (j < nmesh)
 	Zm[j][mesh].real = tempsum;
@@ -1820,7 +1684,7 @@ void oldformMZMt(SYS *indsys)
     }
   }
 /*      savecmplx(fp, "step2", Zm, num_mesh, num_mesh); */
-  
+
   /* R is diagonal, so M*R*Mt is easy */
   for(i = 0; i < num_mesh; i++) {
     for(j = i; j < num_mesh; j++) {
@@ -1828,14 +1692,14 @@ void oldformMZMt(SYS *indsys)
       /* brute force search for elements */
       for(melem = Mlist[i]; melem != NULL; melem = melem->mnext) {
 	for(melem2 = Mlist[j]; melem2 != NULL; melem2 = melem2->mnext) {
-	  if (melem2->filindex == melem->filindex) 
+	  if (melem2->filindex == melem->filindex)
 	    tempsum += melem->sign*R[melem->filindex]*melem2->sign;
 	}
       }
       Zm[i][j].real = Zm[j][i].real = tempsum;
     }
   }
-  /* don't free the temp space */    
+  /* don't free the temp space */
   /*
   if (rows > cols) {
     for(i = 0; i < rows - cols; i++)
@@ -1845,7 +1709,8 @@ void oldformMZMt(SYS *indsys)
   */
 }
 
-char* MattAlloc(int number, int size)
+char* MattAlloc(number, size)
+int number, size;
 {
 
   char *blah;
@@ -1861,17 +1726,19 @@ char* MattAlloc(int number, int size)
   return blah;
 }
 
-/* forms the transpose of M.  Makes a linked list of each row.  Mlist is 
+/* forms the transpose of M.  Makes a linked list of each row.  Mlist is
     a linked list of its rows. */
 /* Note: This uses the same struct as Mlist but in reality, each linked list
    is composed of mesh indices, not fil indices. (filindex is a mesh index) */
-void formMtrans(SYS *indsys)
+formMtrans(indsys)
+SYS *indsys;
 {
   int i, j, count;
   MELEMENT *m, *mt, *mt2, mtdum;
   MELEMENT **Mlist, **Mtrans, **Mtrans_check;
   int meshes, fils;
   int last_filindex;
+  MELEMENT *create_melem();
 
   fils = indsys->num_fils;
   meshes = indsys->num_mesh;
@@ -1915,7 +1782,7 @@ void formMtrans(SYS *indsys)
 	    mt = mt->mnext;
 	  }
 	  printf("Internal Warning: Mesh %d contains the same filament %d times\n",j,count);
-	} 
+	}
       }
     }
     mt->mnext = NULL;
@@ -1928,14 +1795,15 @@ void formMtrans(SYS *indsys)
                   mt = mt->mnext, mt2 = mt2->mnext)
       if (mt->filindex != mt2->filindex || mt->sign != mt2->sign)
         printf("different: %d  %d %d\n",i,mt->filindex, mt2->filindex);
-    if (mt != mt2) 
+    if (mt != mt2)
       printf("both not NULL:  mt: %u  mt2: %u\n", mt, mt2);
   }
 #endif
-      
+
 }
 
-void compare_meshes(MELEMENT *mesh1, MELEMENT *mesh2)
+compare_meshes(mesh1, mesh2)
+MELEMENT *mesh1, *mesh2;
 {
 
   while(mesh1 != NULL && mesh2 != NULL && mesh1->filindex == mesh2->filindex && mesh1->sign == mesh2->sign) {
@@ -1949,36 +1817,50 @@ void compare_meshes(MELEMENT *mesh1, MELEMENT *mesh2)
   }
 }
 
-void cx_dumpMat_totextfile(FILE *fp, CX **Z, int rows, int cols)
+cx_dumpMat_totextfile(fp, Z, rows, cols, freq)
+FILE *fp;
+CX **Z;
+int rows, cols;
+float freq;
 {
   int i, j;
-
+  
   for(i = 0; i < rows; i++) {
-    for(j = 0; j < cols; j++) 
-      fprintf(fp, "%13.6lg %+13.6lgj ", Z[i][j].real, Z[i][j].imag);
+    for(j = 0; j < cols; j++)
+      //fprintf(fp, "%13.6lg %+13.6lgj ", Z[i][j].real, Z[i][j].imag);
+      fprintf(fp, "%13.6lg %+13.6lg ", Z[i][j].imag/(2 * PI * freq),Z[i][j].imag/Z[i][j].real);
     fprintf(fp, "\n");
   }
   return;
 }
 
-void dumpMat_totextfile(FILE *fp, double **A, int rows, int cols)
+dumpMat_totextfile(fp, A, rows, cols)
+FILE *fp;
+double **A;
+int rows, cols;
 {
   int i, j;
 
   for(i = 0; i < rows; i++) {
-    for(j = 0; j < cols; j++) 
+    for(j = 0; j < cols; j++)
       fprintf(fp, "%13.6lg ", A[i][j]);
     fprintf(fp, "\n");
   }
   return;
 }
 
-void dumpVec_totextfile(FILE *fp2, double *Vec, int size)
+dumpVec_totextfile(fp2, Vec, size)
+FILE *fp2;
+double *Vec;
+int size;
 {
   dumpMat_totextfile(fp2, &Vec, 1, size);
 }
 
-void fillMrow(MELEMENT **Mlist, int mesh, double *Mrow)
+fillMrow(Mlist, mesh, Mrow)
+MELEMENT **Mlist;
+int mesh;
+double *Mrow;
 {
   int i;
   MELEMENT *melem;
@@ -1992,7 +1874,10 @@ void fillMrow(MELEMENT **Mlist, int mesh, double *Mrow)
     Mrow[melem->filindex] = melem->sign;
 }
 
-void dump_to_Ycond(FILE *fp, int cond, SYS *indsys)
+dump_to_Ycond(fp, cond, indsys)
+FILE *fp;
+int cond;
+SYS *indsys;
 {
   static char fname[20], tempstr[5];
   int maxiters = indsys->opts->maxiters;
@@ -2001,7 +1886,7 @@ void dump_to_Ycond(FILE *fp, int cond, SYS *indsys)
 
   strcpy(fname,"Ycond");
   strcat(fname,tempstr);
-  savecmplx(fp, fname, indsys->FinalY, indsys->num_extern, 
+  savecmplx(fp, fname, indsys->FinalY, indsys->num_extern,
 	    indsys->num_sub_extern);
 
   strcpy(fname,"resids");
@@ -2022,17 +1907,29 @@ void dump_to_Ycond(FILE *fp, int cond, SYS *indsys)
 
 }
 
-void saveCarray(FILE *fp, char *fname, double **Arr, int rows, int cols)
+saveCarray(fp, fname, Arr, rows, cols)
+FILE *fp;
+char *fname;
+double **Arr;
+int rows, cols;
 {
   int i;
+  int machine;
+
+    machine = 1000;
+#ifdef DEC
+    machine = 0000;
+#endif
 
   for(i = 0; i < rows; i++) {
-    savemat_mod(fp, machine_type()+100, fname, rows, cols, 0, Arr[i],
-        (double *)NULL, i, cols);
+    savemat_mod(fp, machine+100, fname, rows, cols, 0, Arr[i], (double *)NULL,
+		i, cols);
   }
 }
 
-int nnz_inM(MELEMENT **Mlist, int num_mesh)
+int nnz_inM(Mlist, num_mesh)
+MELEMENT **Mlist;
+int num_mesh;
 {
   int counter, i;
   MELEMENT *mesh;
@@ -2046,7 +1943,10 @@ int nnz_inM(MELEMENT **Mlist, int num_mesh)
   return counter;
 }
 
-void dump_M_to_text(FILE *fp, MELEMENT **Mlist, int num_mesh, int nnz)
+dump_M_to_text(fp, Mlist, num_mesh, nnz)
+FILE *fp;
+MELEMENT **Mlist;
+int num_mesh, nnz;
 {
   int counter, i;
   MELEMENT *mesh;
@@ -2061,11 +1961,14 @@ void dump_M_to_text(FILE *fp, MELEMENT **Mlist, int num_mesh, int nnz)
 
   if (counter != nnz)
     fprintf(stderr,"Internal Warning: nnz %d != counter %d\n",nnz,counter);
-  
+
 }
 
-void dump_M_to_matlab(FILE *fp, MELEMENT **Mlist, int num_mesh, int nnz,
-    char *mname)
+dump_M_to_matlab(fp, Mlist, num_mesh, nnz, mname)
+FILE *fp;
+MELEMENT **Mlist;
+int num_mesh, nnz;
+char *mname;
 {
 
   double onerow[3];
@@ -2079,17 +1982,18 @@ void dump_M_to_matlab(FILE *fp, MELEMENT **Mlist, int num_mesh, int nnz,
     for(mesh = Mlist[i]; mesh != NULL; mesh = mesh->mnext) {
       onerow[1] = mesh->filindex + 1;
       onerow[2] = mesh->sign;
-      savemat_mod(fp, machine_type()+100, mname, nnz, 3, 0, onerow,
+      savemat_mod(fp, machine+100, mname, nnz, 3, 0, onerow,
 		  (double *)NULL, counter++, 3);
     }
   }
 
   if (counter != nnz)
     fprintf(stderr,"Internal Warning: nnz %d != counter %d\n",nnz,counter);
-}  
+}
 
 /* this picks one node in each tree to be a ground node */
-void pick_ground_nodes(SYS *indsys)
+pick_ground_nodes(indsys)
+SYS *indsys;
 {
   TREE *atree;
   SEGMENT *seg;
@@ -2103,7 +2007,7 @@ void pick_ground_nodes(SYS *indsys)
       node = getrealnode(((SEGMENT *)atree->loops->path->seg.segp)->node[0]);
     else
       node = getrealnode(((PSEUDO_SEG *)atree->loops->path->seg.segp)->node[0]);
-      
+
     if (node->index != -1) {
       fprintf(stderr,"huh? index == %d in pick_ground_node\n",node->index);
       exit(1);
@@ -2112,7 +2016,9 @@ void pick_ground_nodes(SYS *indsys)
   }
 }
 
-int pick_subset(strlist *portlist, SYS *indsys)
+int pick_subset(portlist, indsys)
+strlist *portlist;
+SYS *indsys;
 {
   strlist *oneport;
   EXTERNAL *ext;
@@ -2123,7 +2029,7 @@ int pick_subset(strlist *portlist, SYS *indsys)
       ext->col_Yindex = ext->Yindex;
     return indsys->num_extern;
   }
-    
+
   for(ext = indsys->externals; ext != NULL; ext=ext->next)
     ext->col_Yindex = -1;
 
@@ -2143,7 +2049,8 @@ int pick_subset(strlist *portlist, SYS *indsys)
 }
 
 /* concatenates so that s1 = s1 + s2 + s3 + s4 */
-void concat4(char *s1, char *s2, char *s3, char *s4)
+concat4(s1,s2,s3,s4)
+char *s1, *s2, *s3, *s4;
 {
   s1[0] = '\0';
   strcat(s1,s2);
